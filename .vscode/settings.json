@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^git status --short && printf '\\\\n--- top-level ---\\\\n' && find \\. -maxdepth 2 -type f \\| sort \\| head -100$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
