@@ -59,10 +59,10 @@ Important files:
 
 `POST /api/auth/login` accepts a role, user ID, and password:
 
-- Citizen uses a normalized mobile number (10–15 digits) and `CITIZEN_PASSWORD` (default `pass123`).
+- Citizen uses a normalized mobile number (10–15 digits) and the configured `CITIZEN_PASSWORD`.
 - Admin uses a normalized email that must match `admins.email_normalized`.
 - Contractor uses a normalized phone number matching an active `contractors.phone_normalized`.
-- Admin and contractor use `STAFF_PASSWORD` (default `admin`).
+- Admin and contractor use the configured `STAFF_PASSWORD`.
 
 Successful login creates an eight-hour HMAC-signed, HttpOnly, SameSite=Strict `govfix_session` cookie. `/api/auth/session` verifies and returns its identity; `/api/auth/logout` clears the cookie.
 
@@ -158,8 +158,8 @@ Requirements: Node.js 20+, pnpm, Python 3, an existing Supabase project, and Clo
    CLOUDINARY_CLOUD_NAME=<cloud name>
    CLOUDINARY_API_KEY=<API key>
    CLOUDINARY_API_SECRET=<API secret>
-   CITIZEN_PASSWORD=pass123
-   STAFF_PASSWORD=admin
+   CITIZEN_PASSWORD=<unique citizen password>
+   STAFF_PASSWORD=<unique staff password>
    ```
 
    Supabase publishable/anon keys are not sufficient for this custom server session model; the server handlers require a service-role/secret key. Keep all server secrets off the client and out of source control. Generate a local session secret with `openssl rand -base64 48`.

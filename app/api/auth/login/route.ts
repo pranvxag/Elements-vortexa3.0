@@ -28,8 +28,11 @@ export async function POST(request: Request) {
 
   const selectedRole = role as PortalRole
   const requiredPassword = selectedRole === 'citizen'
-    ? (process.env.CITIZEN_PASSWORD || 'pass123')
-    : (process.env.STAFF_PASSWORD || 'admin')
+    ? process.env.CITIZEN_PASSWORD
+    : process.env.STAFF_PASSWORD
+  if (!requiredPassword) {
+    return NextResponse.json({ error: 'Sign-in is not configured.' }, { status: 503 })
+  }
   if (!passwordsMatch(body.password, requiredPassword)) {
     return NextResponse.json({ error: 'The user ID or password is incorrect.' }, { status: 401 })
   }

@@ -28,8 +28,8 @@ Open [http://localhost:3000](http://localhost:3000).
    CLOUDINARY_CLOUD_NAME=your-cloud-name
    CLOUDINARY_API_KEY=your-api-key
    CLOUDINARY_API_SECRET=your-api-secret
-   CITIZEN_PASSWORD=pass123
-   STAFF_PASSWORD=admin
+   CITIZEN_PASSWORD=<unique citizen password>
+   STAFF_PASSWORD=<unique staff password>
    ```
 
    Keep the Supabase service-role key, session secret, and Cloudinary API secret private. Do not put any of them in a `NEXT_PUBLIC_` variable. Generate a unique session secret with `openssl rand -base64 48`.
@@ -51,11 +51,11 @@ Cloudinary stores report and completion photos as authenticated assets. The appl
 
 ## Sign-in and workflow
 
-- Citizen: mobile number and `CITIZEN_PASSWORD` (defaults to `pass123`).
-- Admin: an email found in the imported officer workbook and `STAFF_PASSWORD` (defaults to `admin`).
+- Citizen: mobile number and the configured `CITIZEN_PASSWORD`.
+- Admin: an email found in the imported officer workbook and the configured `STAFF_PASSWORD`.
 - Contractor: a mobile number found in the imported contractor CSV and `STAFF_PASSWORD`.
 
-The defaults match the supplied test credentials. They are shared passwords, not proof that a user owns the supplied mobile number or email. Do not deploy them for production or use real personal data with them; use Supabase Auth with verified identities before production.
+These shared passwords are not proof that a user owns the supplied mobile number or email. Set unique, strong values in `.env.local` and Netlify; do not use real personal data with this test authentication model. Use Supabase Auth with verified identities before production.
 
 Citizens can submit reports and only retrieve reports whose stored citizen mobile matches their signed session. Administrators can review and assign category-matched contractors. Contractors can only retrieve reports assigned to their contractor record, start work, and submit a description and photographs. Administrators can approve work (closing the complaint and publishing completion photos) or request further work with a reason. Each transition and history event is committed atomically through a Postgres RPC. The admin portal checks for changed cases every five seconds; citizen and contractor portals refresh every ten seconds.
 
