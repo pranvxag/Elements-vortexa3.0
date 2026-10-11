@@ -2,8 +2,10 @@
 .design-cache/
 .vercel/
 .env
+
 # Environment variables
 .env*.local
+/Dataset/
 
 # Common ignores
 node_modules
