@@ -41,25 +41,120 @@ function PublicHome({ user, onLogin, onTrack, onCreated, openFormOnEnter, onForm
   const [categories, setCategories] = useState<Category[]>([])
   const [categoryError, setCategoryError] = useState('')
 
-  useEffect(() => {
-    let cancelled = false
-    fetch('/api/categories', { cache: 'no-store' }).then(async (response) => {
-      const result = await response.json() as Category[] | { error?: string }
-      if (!response.ok) throw new Error(!Array.isArray(result) ? result.error || 'Complaint categories could not be loaded.' : 'Complaint categories could not be loaded.')
-      if (!Array.isArray(result)) throw new Error('The complaint categories service returned an invalid response.')
-      if (!cancelled) setCategories(result)
-    }).catch((error: unknown) => {
-      if (!cancelled) setCategoryError(error instanceof Error ? error.message : 'Complaint categories could not be loaded.')
-    })
-    return () => { cancelled = true }
-  }, [])
+type Status = 'Submitted' | 'Under review' | 'Assigned' | 'In progress' | 'Resolved'
+type ComplaintDomain = 'Roads & Potholes' | 'Streetlights & Electrical' | 'Garbage & Cleanliness' | 'Water Supply' | 'Drainage & Sewage' | 'Public Toilets & Sanitation' | 'Construction & Encroachment' | 'Waterlogging & Flooding' | 'Parks & Public Spaces'
+const complaintDomains: ComplaintDomain[] = [
+  'Roads & Potholes',
+  'Streetlights & Electrical',
+  'Garbage & Cleanliness',
+  'Water Supply',
+  'Drainage & Sewage',
+  'Public Toilets & Sanitation',
+  'Construction & Encroachment',
+  'Waterlogging & Flooding',
+  'Parks & Public Spaces',
+]
 
-  useEffect(() => {
-    if (openFormOnEnter && user) {
-      setShowForm(true)
-      onFormOpened()
-    }
-  }, [onFormOpened, openFormOnEnter, user])
+type Complaint = {
+  id: string
+  title: string
+  category: string
+  status: Status
+  area: string
+  department: string
+  age: string
+  priority?: 'High' | 'Medium' | 'Low'
+  domain?: ComplaintDomain | 'Uncategorized'
+  details?: string
+  submittedAt?: string
+  assignedOfficer?: string
+  trackingId?: string
+  icon: typeof Droplets
+  latitude: number
+  longitude: number
+}
+
+type ComplaintRecord = {
+  tracking_id: string
+  category: string
+  title: string
+  location_text: string | null
+  details: string | null
+  latitude: number
+  longitude: number
+  status: string
+  created_at: string
+}
+
+const departmentFor = (category: string) => {
+  const value = category.toLowerCase()
+  if (value.includes('water') || value.includes('drain') || value.includes('sewage')) return 'Water & Utilities'
+  if (value.includes('garbage') || value.includes('sanitation') || value.includes('collection')) return 'Sanitation'
+  if (value.includes('light')) return 'Street Services'
+  return 'Public Works'
+}
+
+const iconFor = (category: string) => {
+  const value = category.toLowerCase()
+  if (value.includes('water') || value.includes('drain') || value.includes('sewage')) return Droplets
+  if (value.includes('light')) return Lightbulb
+  if (value.includes('garbage') || value.includes('sanitation') || value.includes('collection')) return Trash2
+  return Navigation
+}
+
+const ageFor = (createdAt: string) => {
+  const hours = Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / 3600000))
+  return hours < 1 ? 'Just now' : hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`
+}
+
+const complaintFromRecord = (record: ComplaintRecord): Complaint => ({
+  id: record.tracking_id,
+  title: record.title,
+  category: record.category,
+  status: (['Submitted', 'Under review', 'Assigned', 'In progress', 'Resolved'].includes(record.status) ? record.status : 'Submitted') as Status,
+  area: record.location_text || `${record.latitude.toFixed(4)}, ${record.longitude.toFixed(4)}`,
+  department: departmentFor(record.category),
+  age: ageFor(record.created_at),
+  priority: record.status === 'Submitted' ? 'High' : record.status === 'Resolved' ? 'Low' : 'Medium',
+  icon: iconFor(record.category),
+  latitude: record.latitude,
+  longitude: record.longitude,
+})
+
+function mapSavedComplaint(record: SavedComplaintRecord): Complaint {
+  const domain = complaintDomains.includes(record.complaint_domain as ComplaintDomain)
+    ? record.complaint_domain as ComplaintDomain
+    : 'Uncategorized'
+  const validStatuses: Status[] = ['Submitted', 'Under review', 'Assigned', 'In progress', 'Resolved']
+  const status = validStatuses.includes(record.status as Status) ? record.status as Status : 'Submitted'
+  const icon = domain === 'Water Supply' ? Droplets
+    : domain === 'Streetlights & Electrical' ? Lightbulb
+      : domain === 'Garbage & Cleanliness' ? Trash2
+        : domain === 'Roads & Potholes' ? Navigation : MapPin
+
+  return {
+    id: String(record.id),
+    trackingId: record.tracking_id,
+    title: record.title,
+    category: record.category,
+    domain,
+    status,
+    area: record.location_text ?? '',
+    department: '—',
+    age: new Date(record.created_at).toLocaleString(),
+    submittedAt: record.created_at,
+    details: record.details ?? undefined,
+    icon,
+  }
+}
+
+const navItems = [
+  { label: 'Overview', icon: BarChart3 },
+  { label: 'Complaints', icon: FileText },
+  { label: 'Complaints by Domain', icon: ListFilter },
+  { label: 'Map intelligence', icon: MapPin },
+  { label: 'Departments', icon: Building2 },
+]
 
   const startComplaint = () => {
     if (!user) {
@@ -223,3 +318,12 @@ export default function Page() {
     else setScreen('citizen')
   }} onCreated={() => setComplaintRefresh((value) => value + 1)} />
 }
+
+function Kpi({ title, value, change, icon: Icon, tone, warning }: { title: string; value: string; change: string; icon: typeof Check; tone: string; warning?: boolean }) { return <div className="kpi-card"><div className={`kpi-icon ${tone}`}><Icon /></div><div className="kpi-label">{title}<span className={warning ? 'negative' : 'positive'}>{warning ? '↑ ' : '↑ '}{change}</span></div><strong>{value}</strong><small>vs. previous month</small></div> }
+function Activity({ initials, color, text, time }: { initials: string; color: string; text: string; time: string }) { return <div className="activity-item"><span className={`activity-avatar ${color}`}>{initials}</span><p><strong>{text.split(' ').slice(0, 2).join(' ')}</strong> {text.split(' ').slice(2).join(' ')}<small>{time}</small></p></div> }
+function CasePanel({ complaint, onClose }: { complaint: Complaint; onClose: () => void }) {
+  const [opened, setOpened] = useState(false)
+  return <div className="case-overlay"><aside className="case-panel"><div className="case-top"><div><span className="eyebrow">Complaint details</span><h2>{complaint.trackingId ?? complaint.id}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close details"><X /></button></div><div className="case-status"><StatusBadge status={complaint.status} />{complaint.priority && <span className="priority-tag"><span /> {complaint.priority} priority</span>}</div><h3>{complaint.title}</h3>{complaint.domain && <p className="case-domain">Complaint Domain: {complaint.domain}</p>}<p className="case-description">{complaint.details || 'No additional description provided.'}</p><div className="case-meta"><span><MapPin /> {complaint.area || 'Location not provided'}</span><span><Building2 /> {complaint.assignedOfficer || 'No officer assigned'}</span><span><Clock3 /> Submitted {complaint.submittedAt ? new Date(complaint.submittedAt).toLocaleString() : complaint.age}</span></div>{opened && <p className="case-opened-note" role="status">Full case view opened for {complaint.trackingId ?? complaint.id}.</p>}<button className="button button-primary full" onClick={() => setOpened(true)}>{opened ? 'Case is open' : 'Open full case'} <ArrowRight /></button></aside></div>
+}
+
+export default function Page() { const [portal, setPortal] = useState<'citizen' | 'staff'>('citizen'); return <><div className="portal-switcher"><button className={portal === 'citizen' ? 'selected' : ''} onClick={() => setPortal('citizen')}><House /> Citizen portal</button><button className={portal === 'staff' ? 'selected' : ''} onClick={() => setPortal('staff')}><BarChart3 /> Staff workspace</button></div>{portal === 'citizen' ? <CitizenLanding onEmployee={() => setPortal('staff')} /> : <EmployeeDashboard onCitizen={() => setPortal('citizen')} />}</> }

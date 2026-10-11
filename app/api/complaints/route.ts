@@ -5,19 +5,67 @@ import { deletePrivatePhoto, uploadPrivatePhoto, type StoredPhoto } from '@/lib/
 import type { ComplaintRow, Json } from '@/lib/supabase-types'
 import { sessionFromRequest, type PortalSession } from '@/lib/session'
 
-export const runtime = 'nodejs'
-
-const maximumImageSize = 10 * 1024 * 1024
-const maximumImagesPerReport = 10
-const allowedImageTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
-
-function unauthorized() {
-  return NextResponse.json({ error: 'Sign in to access complaints.' }, { status: 401 })
+type ComplaintRequest = {
+  complaintDomain?: unknown
+  category?: unknown
+  title?: unknown
+  location?: unknown
+  details?: unknown
+  latitude?: unknown
+  longitude?: unknown
 }
 
-function normalizePhone(value: string) {
-  return value.replace(/\D/g, '')
+const complaintDomains = [
+  'Roads & Potholes',
+  'Streetlights & Electrical',
+  'Garbage & Cleanliness',
+  'Water Supply',
+  'Drainage & Sewage',
+  'Public Toilets & Sanitation',
+  'Construction & Encroachment',
+  'Waterlogging & Flooding',
+  'Parks & Public Spaces',
+] as const
+
+const complaintSelect = 'id,tracking_id,category,title,location_text,details,status,created_at'
+
+function isMissingDomainColumn(error: { code?: string; message?: string } | null) {
+  return error?.code === '42703' && error.message?.includes('complaint_domain')
 }
+
+export async function GET() {
+  const supabaseUrl = process.env.SUPABASE_URL
+  const supabaseKey = process.env.SUPABASE_ANON_KEY
+  if (!supabaseUrl || !supabaseKey) {
+    return NextResponse.json({ error: 'The complaint database is not configured.' }, { status: 503 })
+  }
+
+  const response = await fetch(
+    `${supabaseUrl.replace(/\/$/, '')}/rest/v1/complaints?select=id,tracking_id,complaint_domain,category,title,location_text,details,status,created_at&order=created_at.desc`,
+    { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` }, cache: 'no-store' },
+  )
+  if (!response.ok) {
+    const upstreamError = await response.json().catch(() => null) as { code?: string; message?: string } | null
+    if (isMissingDomainColumn(upstreamError)) {
+      const legacyResponse = await fetch(
+        `${supabaseUrl.replace(/\/$/, '')}/rest/v1/complaints?select=${complaintSelect}&order=created_at.desc`,
+        { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` }, cache: 'no-store' },
+      )
+      if (legacyResponse.ok) {
+        const records = await legacyResponse.json() as Array<{ category: string } & Record<string, unknown>>
+        return NextResponse.json(records.map((record) => ({
+          ...record,
+          complaint_domain: complaintDomains.includes(record.category as typeof complaintDomains[number]) ? record.category : null,
+        })))
+      }
+    }
+    console.error('Supabase complaint read failed', response.status, { code: upstreamError?.code, message: upstreamError?.message })
+    return NextResponse.json({ error: 'Complaints could not be loaded. Check the Supabase table and read policy.' }, { status: 502 })
+  }
+  return NextResponse.json(await response.json())
+}
+
+const trackingId = () => `GF-${Math.floor(10000 + Math.random() * 90000)}`
 
 function photoResult(trackingId: string, photo: StoredPhoto, description = '', publicVisible = false) {
   return {
@@ -133,17 +181,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid complaint payload.' }, { status: 400 })
   }
 
-  const category = String(form.get('category') || '').trim()
-  const categoryId = String(form.get('categoryId') || '').trim()
-  const title = String(form.get('title') || '').trim()
-  const location = String(form.get('location') || '').trim()
-  const details = String(form.get('details') || '').trim()
-  const latitude = Number(form.get('latitude'))
-  const longitude = Number(form.get('longitude'))
-  const area = String(form.get('area') || location).trim()
-  const zoneId = String(form.get('zoneId') || '').trim()
-  const zoneName = String(form.get('zoneName') || '').trim()
-  const files = form.getAll('images').filter((value): value is File => value instanceof File && value.size > 0)
+  const category = typeof body.category === 'string' ? body.category.trim() : ''
+  const complaintDomain = typeof body.complaintDomain === 'string' ? body.complaintDomain.trim() : ''
+  const title = typeof body.title === 'string' ? body.title.trim() : ''
+  const location = typeof body.location === 'string' ? body.location.trim() : ''
+  const details = typeof body.details === 'string' ? body.details.trim() : ''
+  const latitude = typeof body.latitude === 'number' ? body.latitude : NaN
+  const longitude = typeof body.longitude === 'number' ? body.longitude : NaN
+  if (!category || !complaintDomains.includes(complaintDomain as typeof complaintDomains[number]) || !title || !Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+    return NextResponse.json({ error: 'Complaint domain, category, title, and a valid live location are required.' }, { status: 400 })
+  }
 
   if (!category || !categoryId || !title || title.length > 160 || details.length > 4000
     || !Number.isFinite(latitude) || latitude < -90 || latitude > 90
