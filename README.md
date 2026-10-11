@@ -31,7 +31,7 @@ The production server is also available at [http://localhost:3000](http://localh
 
 ## Supabase complaint storage
 
-Complaint submission uses the browser's location permission and stores the report in Supabase. The staff workspace reads the same `complaints` table through `/api/complaints`, so newly submitted public reports appear in the complaints list and map. The app requires a Supabase project configured with these environment variables:
+Complaint submission uses the browser's location permission and stores the report in Supabase. The staff workspace reads the same `complaints` table through `/api/complaints`, so public submissions appear in the overview, complaints list, map, and department workload. The staff workspace refreshes reports every 30 seconds and can be refreshed manually. Dashboard totals, category counts, the 30-day submission chart, and department workloads are calculated from stored complaint records. The app requires a Supabase project configured with these environment variables:
 
 ```bash
 SUPABASE_URL=https://your-project.supabase.co

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { importLibrary, setOptions } from '@googlemaps/js-api-loader'
+import StaffWorkspace from '../components/staff-workspace'
 import {
   AlertTriangle,
   ArrowRight,
@@ -313,6 +314,7 @@ function EmployeeDashboard({ onCitizen }: { onCitizen: () => void }) {
       .then(async (response) => {
         const result = await response.json() as ComplaintRecord[] | { error?: string }
         if (!response.ok) throw new Error('error' in result ? result.error : 'The complaints could not be loaded.')
+        if (!Array.isArray(result)) throw new Error('The complaints service returned an invalid response.')
         if (!cancelled) setComplaints(result.map(complaintFromRecord))
       })
       .catch((loadError) => {
@@ -336,4 +338,4 @@ function CasePanel({ complaint, onClose }: { complaint: Complaint; onClose: () =
   return <div className="case-overlay"><aside className="case-panel"><div className="case-top"><div><span className="eyebrow">Complaint details</span><h2>{complaint.id}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close details"><X /></button></div><div className="case-status"><StatusBadge status={complaint.status} /><span className="priority-tag"><span /> {complaint.priority} priority</span></div><h3>{complaint.title}</h3><p className="case-description">A resident reported an issue requiring municipal attention. This is a fictional demo record used to show the complete case workflow.</p><div className="case-meta"><span><MapPin /> {complaint.area}</span><span><Building2 /> {complaint.department}</span><span><Clock3 /> Received {complaint.age}</span></div><div className="case-section"><div className="case-section-title">Workflow timeline <span>3 of 5</span></div><div className="timeline"><div className="timeline-item done"><i><Check /></i><div><strong>Complaint submitted</strong><small>Today, 08:42 · Resident portal</small></div></div><div className="timeline-item done"><i><Check /></i><div><strong>Under review</strong><small>Today, 09:10 · Maya Chen</small></div></div><div className="timeline-item current"><i><Clock3 /></i><div><strong>{complaint.status}</strong><small>Action required from assigned team</small></div></div><div className="timeline-item"><i /> <div><strong>Resolved</strong><small>Pending</small></div></div></div></div><div className="ai-callout"><Sparkles /><div><strong>AI suggestion · Needs review</strong><p>Likely category: {complaint.category}. Route to {complaint.department} based on location and issue keywords.</p></div></div>{opened && <p className="case-opened-note" role="status">Full case view opened for {complaint.id}. All workflow details are shown in this panel.</p>}<button className="button button-primary full" onClick={() => setOpened(true)}>{opened ? 'Case is open' : 'Open full case'} <ArrowRight /></button></aside></div>
 }
 
-export default function Page() { const [portal, setPortal] = useState<'citizen' | 'staff'>('citizen'); return <><div className="portal-switcher"><button className={portal === 'citizen' ? 'selected' : ''} onClick={() => setPortal('citizen')}><House /> Citizen portal</button><button className={portal === 'staff' ? 'selected' : ''} onClick={() => setPortal('staff')}><BarChart3 /> Staff workspace</button></div>{portal === 'citizen' ? <CitizenLanding onEmployee={() => setPortal('staff')} /> : <EmployeeDashboard onCitizen={() => setPortal('citizen')} />}</> }
+export default function Page() { const [portal, setPortal] = useState<'citizen' | 'staff'>('citizen'); return <><div className="portal-switcher"><button className={portal === 'citizen' ? 'selected' : ''} onClick={() => setPortal('citizen')}><House /> Citizen portal</button><button className={portal === 'staff' ? 'selected' : ''} onClick={() => setPortal('staff')}><BarChart3 /> Staff workspace</button></div>{portal === 'citizen' ? <CitizenLanding onEmployee={() => setPortal('staff')} /> : <StaffWorkspace onCitizen={() => setPortal('citizen')} />}</> }
