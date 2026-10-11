@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { firestore } from '@/lib/firebase-admin'
+import { supabaseAdmin } from '@/lib/supabase-admin'
 import { privatePhotoDownloadUrl, type StoredPhoto } from '@/lib/cloudinary'
 import { sessionFromRequest } from '@/lib/session'
 
@@ -14,21 +14,22 @@ export async function GET(request: Request, context: { params: Promise<{ trackin
   }
 
   try {
-    const snapshot = await firestore().collection('complaints').doc(trackingId).get()
-    if (!snapshot.exists) return NextResponse.json({ error: 'Complaint not found.' }, { status: 404 })
-    const complaint = snapshot.data()!
-    const isOwner = session.role === 'citizen' && session.phone === complaint.citizenMobile
-    const isAssignedContractor = session.role === 'contractor' && session.contractorId === complaint.contractorId
+    const { data: complaint, error } = await supabaseAdmin().from('complaints').select('citizen_mobile, contractor_id, report_photos, completion_photos')
+      .eq('tracking_id', trackingId).maybeSingle()
+    if (error) throw error
+    if (!complaint) return NextResponse.json({ error: 'Complaint not found.' }, { status: 404 })
+    const isOwner = session.role === 'citizen' && session.phone === complaint.citizen_mobile
+    const isAssignedContractor = session.role === 'contractor' && session.contractorId === complaint.contractor_id
     const isAdmin = session.role === 'admin'
     if (!isOwner && !isAssignedContractor && !isAdmin) {
       return NextResponse.json({ error: 'You do not have access to this complaint.' }, { status: 403 })
     }
 
-    const reportPhoto = Array.isArray(complaint.reportPhotos)
-      ? (complaint.reportPhotos as StoredPhoto[]).find((photo) => photo.photoId === photoId)
+    const reportPhoto = Array.isArray(complaint.report_photos)
+      ? (complaint.report_photos as unknown as StoredPhoto[]).find((photo) => photo.photoId === photoId)
       : undefined
-    const completionPhoto = Array.isArray(complaint.completionPhotos)
-      ? (complaint.completionPhotos as Array<StoredPhoto & { public?: boolean }>).find((photo) => photo.photoId === photoId)
+    const completionPhoto = Array.isArray(complaint.completion_photos)
+      ? (complaint.completion_photos as unknown as Array<StoredPhoto & { public?: boolean }>).find((photo) => photo.photoId === photoId)
       : undefined
     if (!reportPhoto && !completionPhoto) return NextResponse.json({ error: 'Photo not found.' }, { status: 404 })
     if (completionPhoto && session.role === 'citizen' && completionPhoto.public !== true) {

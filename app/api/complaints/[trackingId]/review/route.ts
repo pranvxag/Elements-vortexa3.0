@@ -1,6 +1,6 @@
-import { FieldValue } from 'firebase-admin/firestore'
 import { NextResponse } from 'next/server'
-import { firestore } from '@/lib/firebase-admin'
+import { supabaseAdmin } from '@/lib/supabase-admin'
+import type { Json } from '@/lib/supabase-types'
 import { sessionFromRequest } from '@/lib/session'
 
 export const runtime = 'nodejs'
@@ -26,34 +26,36 @@ export async function POST(request: Request, context: { params: Promise<{ tracki
 
   try {
     const { trackingId } = await context.params
-    const complaintRef = firestore().collection('complaints').doc(trackingId)
-    await firestore().runTransaction(async (transaction) => {
-      const snapshot = await transaction.get(complaintRef)
-      if (!snapshot.exists) throw new Error('Complaint not found.')
-      const complaint = snapshot.data()!
-      if (complaint.status !== 'Work completed') throw new Error('Only completed work can be reviewed.')
-      const approved = body.decision === 'approve'
-      const completionPhotos = Array.isArray(complaint.completionPhotos)
-        ? complaint.completionPhotos.map((photo: { photoId: string; publicId: string; format: string; contentType: string; description?: string }) => ({ ...photo, public: approved }))
-        : []
-      transaction.update(complaintRef, {
-        status: approved ? 'Closed' : 'Rework required',
-        completionPhotos,
-        reviewReason: approved ? '' : reason,
-        updatedAt: FieldValue.serverTimestamp(),
-      })
-      transaction.create(complaintRef.collection('updates').doc(), {
-        type: approved ? 'approved' : 'rework_requested',
-        message: approved ? 'Work approved. Complaint closed.' : `Further work requested: ${reason}`,
-        actorRole: 'admin',
-        actorName: session.name,
-        createdAt: FieldValue.serverTimestamp(),
-      })
+    const db = supabaseAdmin()
+    const { data: complaint, error: readError } = await db.from('complaints')
+      .select('status, completion_photos').eq('tracking_id', trackingId).maybeSingle()
+    if (readError) throw readError
+    if (!complaint) return NextResponse.json({ error: 'Complaint not found.' }, { status: 404 })
+    if (complaint.status !== 'Work completed') {
+      return NextResponse.json({ error: 'Only completed work can be reviewed.' }, { status: 409 })
+    }
+    const approved = body.decision === 'approve'
+    const completionPhotos = Array.isArray(complaint.completion_photos)
+      ? complaint.completion_photos.map((photo) => ({ ...(photo as Record<string, Json>), public: approved }))
+      : []
+    const { error } = await db.rpc('transition_complaint', {
+      p_tracking_id: trackingId,
+      p_expected_statuses: ['Work completed'],
+      p_new_status: approved ? 'Closed' : 'Rework required',
+      p_patch: {
+        completion_photos: completionPhotos,
+        review_reason: approved ? '' : reason,
+      } as Json,
+      p_event_type: approved ? 'approved' : 'rework_requested',
+      p_message: approved ? 'Work approved. Complaint closed.' : `Further work requested: ${reason}`,
+      p_actor_role: 'admin',
+      p_actor_name: session.name,
     })
-    return NextResponse.json({ success: true, status: body.decision === 'approve' ? 'Closed' : 'Rework required' })
+    if (error) throw error
+    return NextResponse.json({ success: true, status: approved ? 'Closed' : 'Rework required' })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'The work could not be reviewed.'
-    const status = message === 'Complaint not found.' ? 404 : message.startsWith('Only completed') ? 409 : 503
+    const status = message.includes('not found') ? 404 : message.includes('status changed') ? 409 : 503
     return NextResponse.json({ error: message }, { status })
   }
 }

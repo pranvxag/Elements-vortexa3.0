@@ -1,8 +1,8 @@
-import { FieldValue } from 'firebase-admin/firestore'
 import { randomUUID } from 'node:crypto'
 import { NextResponse } from 'next/server'
-import { firestore } from '@/lib/firebase-admin'
+import { supabaseAdmin } from '@/lib/supabase-admin'
 import { deletePrivatePhoto, uploadPrivatePhoto, type StoredPhoto } from '@/lib/cloudinary'
+import type { Json } from '@/lib/supabase-types'
 import { sessionFromRequest } from '@/lib/session'
 
 export const runtime = 'nodejs'
@@ -13,7 +13,9 @@ const allowedImageTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
 export async function POST(request: Request, context: { params: Promise<{ trackingId: string }> }) {
   const session = sessionFromRequest(request)
   if (!session) return NextResponse.json({ error: 'Sign in to upload completion evidence.' }, { status: 401 })
-  if (session.role !== 'contractor') return NextResponse.json({ error: 'Only assigned contractors can submit completion evidence.' }, { status: 403 })
+  if (session.role !== 'contractor' || !session.contractorId) {
+    return NextResponse.json({ error: 'Only assigned contractors can submit completion evidence.' }, { status: 403 })
+  }
 
   let form: FormData
   try {
@@ -31,15 +33,17 @@ export async function POST(request: Request, context: { params: Promise<{ tracki
   }
 
   const { trackingId } = await context.params
-  const complaintRef = firestore().collection('complaints').doc(trackingId)
   const uploadedPhotos: StoredPhoto[] = []
   try {
-    const initial = await complaintRef.get()
-    if (!initial.exists) return NextResponse.json({ error: 'Complaint not found.' }, { status: 404 })
-    if (initial.data()?.contractorId !== session.contractorId) {
+    const db = supabaseAdmin()
+    const { data: complaint, error: readError } = await db.from('complaints')
+      .select('contractor_id, status').eq('tracking_id', trackingId).maybeSingle()
+    if (readError) throw readError
+    if (!complaint) return NextResponse.json({ error: 'Complaint not found.' }, { status: 404 })
+    if (complaint.contractor_id !== session.contractorId) {
       return NextResponse.json({ error: 'This complaint is not assigned to you.' }, { status: 403 })
     }
-    if (!['In progress', 'Rework required'].includes(String(initial.data()?.status))) {
+    if (!['In progress', 'Rework required'].includes(complaint.status)) {
       return NextResponse.json({ error: 'Start work before submitting completion evidence.' }, { status: 409 })
     }
 
@@ -48,33 +52,29 @@ export async function POST(request: Request, context: { params: Promise<{ tracki
       uploadedPhotos.push(await uploadPrivatePhoto(photo, photoId, `govfix/${trackingId}/completion/${photoId}`))
     }
 
-    await firestore().runTransaction(async (transaction) => {
-      const snapshot = await transaction.get(complaintRef)
-      if (!snapshot.exists || snapshot.data()?.contractorId !== session.contractorId) {
-        throw new Error('Complaint assignment changed before completion could be submitted.')
-      }
-      if (!['In progress', 'Rework required'].includes(String(snapshot.data()?.status))) {
-        throw new Error('The complaint status changed before completion could be submitted.')
-      }
-      transaction.update(complaintRef, {
-        status: 'Work completed',
-        completionPhotos: uploadedPhotos.map((photo) => ({ ...photo, description, public: false })),
-        completionDescription: description,
-        updatedAt: FieldValue.serverTimestamp(),
-      })
-      transaction.create(complaintRef.collection('updates').doc(), {
-        type: 'work_completed',
-        message: description,
-        actorRole: 'contractor',
-        actorName: session.name,
-        createdAt: FieldValue.serverTimestamp(),
-      })
+    const { error } = await db.rpc('transition_complaint', {
+      p_tracking_id: trackingId,
+      p_expected_statuses: [complaint.status],
+      p_new_status: 'Work completed',
+      p_patch: {
+        completion_photos: uploadedPhotos.map((photo) => ({ ...photo, description, public: false })) as unknown as Json,
+        completion_description: description,
+      },
+      p_event_type: 'work_completed',
+      p_message: description,
+      p_actor_role: 'contractor',
+      p_actor_name: session.name,
+      p_required_contractor_id: session.contractorId,
     })
+    if (error) throw error
     return NextResponse.json({ success: true })
   } catch (error) {
     const cleanup = await Promise.allSettled(uploadedPhotos.map((photo) => deletePrivatePhoto(photo.publicId)))
     const message = error instanceof Error ? error.message : 'Completion evidence could not be saved.'
     const cleanupFailed = cleanup.some((result) => result.status === 'rejected')
-    return NextResponse.json({ error: cleanupFailed ? `${message} Uploaded files could not all be cleaned up; contact the system administrator.` : message }, { status: 503 })
+    const status = message.includes('not assigned') ? 403 : message.includes('status changed') ? 409 : 503
+    return NextResponse.json({
+      error: cleanupFailed ? `${message} Uploaded files could not all be cleaned up; contact the system administrator.` : message,
+    }, { status })
   }
 }

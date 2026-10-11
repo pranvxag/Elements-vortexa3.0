@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { firestore } from '@/lib/firebase-admin'
+import { supabaseAdmin } from '@/lib/supabase-admin'
 import { createSessionToken, setSessionCookie, type PortalRole } from '@/lib/session'
 
 export const runtime = 'nodejs'
@@ -44,21 +44,23 @@ export async function POST(request: Request) {
       identity = { userId: phone, phone, name: `Citizen · ${phone.slice(-4)}` }
     } else if (selectedRole === 'admin') {
       const email = userId.toLowerCase()
-      const result = await firestore().collection('admins').where('emailNormalized', '==', email).limit(1).get()
-      if (result.empty) return NextResponse.json({ error: 'The user ID or password is incorrect.' }, { status: 401 })
-      const admin = result.docs[0].data()
-      identity = { userId: email, name: typeof admin.name === 'string' ? admin.name : 'Administrator' }
+      const { data: admin, error } = await supabaseAdmin()
+        .from('admins').select('officer_id, name').eq('email_normalized', email).maybeSingle()
+      if (error) throw error
+      if (!admin) return NextResponse.json({ error: 'The user ID or password is incorrect.' }, { status: 401 })
+      identity = { userId: email, name: admin.name || 'Administrator' }
     } else {
       const phone = normalizedPhone(userId)
-      const result = await firestore().collection('contractors').where('phoneNormalized', '==', phone).limit(1).get()
-      if (result.empty) return NextResponse.json({ error: 'The user ID or password is incorrect.' }, { status: 401 })
-      const contractor = result.docs[0].data()
-      if (contractor.active === false) return NextResponse.json({ error: 'This contractor account is inactive.' }, { status: 403 })
+      const { data: contractor, error } = await supabaseAdmin()
+        .from('contractors').select('contractor_id, name, active').eq('phone_normalized', phone).maybeSingle()
+      if (error) throw error
+      if (!contractor) return NextResponse.json({ error: 'The user ID or password is incorrect.' }, { status: 401 })
+      if (!contractor.active) return NextResponse.json({ error: 'This contractor account is inactive.' }, { status: 403 })
       identity = {
-        userId: typeof contractor.contractorId === 'string' ? contractor.contractorId : result.docs[0].id,
-        contractorId: typeof contractor.contractorId === 'string' ? contractor.contractorId : result.docs[0].id,
+        userId: contractor.contractor_id,
+        contractorId: contractor.contractor_id,
         phone,
-        name: typeof contractor.name === 'string' ? contractor.name : 'Contractor',
+        name: contractor.name || 'Contractor',
       }
     }
 

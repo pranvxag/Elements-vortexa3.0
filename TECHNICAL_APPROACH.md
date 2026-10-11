@@ -2,176 +2,158 @@
 
 ## 1. Purpose and scope
 
-GovFix Civic is a civic complaint application with a public citizen experience and authenticated administration and contractor workspaces. A complaint is created once and stored in Cloud Firestore. The citizen, authorized administrators, and the complaint's assigned contractor use the same complaint record and its update history.
+GovFix Civic is a civic-complaint application with a citizen-facing reporting and tracking experience and authenticated admin and contractor workspaces. Supabase Postgres is the shared source of truth. Cloudinary stores report and completion photographs. All portals use the same complaint records.
 
-The implementation in this repository is a **Next.js 16 App Router application using React 19 and TypeScript**. It is not a separate Vite frontend plus FastAPI backend. Next.js route handlers provide the server API and use the Firebase Admin SDK to access Firestore. Cloudinary stores complaint and completion images; Firebase Storage is not required.
+This repository implements the app with **Next.js 16 App Router, React 19, and TypeScript**. Next.js route handlers provide the server API. Supabase is accessed server-side using a service-role key, and Cloudinary is accessed server-side using its API secret. Neither credential is exposed to browser code.
 
-The system supports this lifecycle:
+Workflow:
 
 ```text
-Citizen submits
+Citizen submits complaint
   -> Submitted
-  -> Admin assigns a category-matched contractor
+  -> Admin assigns an appropriate contractor
   -> Assigned
-  -> Contractor starts field work
+  -> Contractor begins field work
   -> In progress
-  -> Contractor submits description and evidence
+  -> Contractor submits description and photos
   -> Work completed
-  -> Admin approves -> Closed, completion photos visible to citizen
-                 or -> Rework required -> contractor resumes work
+  -> Admin approves -> Closed; evidence becomes citizen-visible
+                 or -> Rework required -> contractor resumes
 ```
 
-## 2. Architectural principles
+## 2. Design principles
 
-1. **One source of truth:** portals do not maintain separate complaint fixtures. Firestore stores the complaint records, assignment, current status, photo metadata, and event history.
-2. **Server-mediated access:** browsers call same-origin Next.js APIs. Firebase Admin credentials and Cloudinary credentials stay on the server and must never use a `NEXT_PUBLIC_` variable.
-3. **Role and record scoped access:** API handlers validate the signed-in role and, for citizens and contractors, verify access to the specific complaint before returning data or allowing a mutation.
-4. **Auditable transitions:** each meaningful workflow event is appended to the complaint's `updates` subcollection.
-5. **Private evidence by default:** Cloudinary images are uploaded as authenticated assets. An authorization-checked application route proxies image downloads; completion photos are not available to citizens until approved.
-6. **Dataset import is controlled:** the supplied source records are imported once, preserving tracking IDs while avoiding overwriting complaints that already exist.
+1. **Single source of truth:** citizen, admin, and contractor views are database-backed and use the same Postgres complaint row.
+2. **Server-mediated database access:** browsers call same-origin Next.js APIs. Only those handlers and the local importer use the Supabase service-role key.
+3. **Role and ownership checks:** signed session roles scope every complaint query and mutation. A citizen can access only matching `citizen_mobile`; contractors can access only complaints assigned to their contractor ID.
+4. **Atomic workflow changes:** Postgres functions update a complaint and append its history event inside one database transaction.
+5. **Private image handling:** Cloudinary authenticated assets are returned through an API that checks session and complaint access. Completion images are citizen-readable only after approval.
+6. **Controlled dataset seed:** an importer validates source files, preserves complaint tracking IDs, skips existing complaint IDs, and writes an import marker.
 
-## 3. Technology and component boundaries
+## 3. Components and technology
 
-| Concern | Technology | Responsibility |
+| Layer | Technology | Role |
 |---|---|---|
-| Web application and server endpoints | Next.js 16 App Router | Renders the public page and portals; implements same-origin API route handlers |
-| UI | React 19, TypeScript, Tailwind CSS | Complaint submission, citizen tracking, admin operations, contractor work queue |
-| Authentication session | Node.js crypto HMAC and HttpOnly cookie | Signs role and identity claims; cookie is SameSite=Strict and expires after eight hours |
-| Shared operational database | Cloud Firestore via Firebase Admin SDK | Complaints, identity directories, categories, and complaint update history |
-| Photo storage | Cloudinary Node SDK | Authenticated report and completion image assets |
-| Map display | Google Maps JavaScript API (optional) | Admin map visualization when a restricted browser API key is configured |
-| Initial data load | Node.js importer and Python standard-library XLSX reader | Validates and loads supplied CSV/XLSX records into Firestore |
+| Page rendering/API | Next.js App Router | Public page, portals, server route handlers |
+| UI | React, TypeScript, Tailwind CSS | Complaint form, tracking, admin review, contractor work queue |
+| App session | Node.js HMAC, HttpOnly cookie | Role and identity assertion with expiration |
+| Shared database | Supabase Postgres, `@supabase/supabase-js` | Complaint records, staff directory, categories, progress history |
+| Atomic writes | Postgres PL/pgSQL RPCs | Create complaint+initial history; transition complaint+history |
+| Photo storage | Cloudinary authenticated image delivery | Report and completion photo upload, signed download, cleanup |
+| Optional map | Google Maps JavaScript API | Admin map visualization |
+| Data seed | Node.js importer, Python standard-library XLSX parser | Import CSV and officer workbook records |
 
-Main implementation locations:
+Important files:
 
-- `app/page.tsx`: public home page, citizen sign-in, complaint creation, and entry points for admin and contractor access.
-- `components/portal-workflow.tsx`: citizen, admin, and contractor portal workflows and periodic refresh.
-- `app/api/`: server-side authentication, complaint, category, contractor, workflow, and image endpoints.
-- `lib/firebase-admin.ts`: server-only Firebase Admin initialization and Firestore access.
-- `lib/session.ts`: session token creation, verification, role types, and cookie helpers.
-- `lib/cloudinary.ts`: authenticated Cloudinary upload, cleanup, and signed download URL creation.
-- `scripts/import-dataset.mjs`: source dataset validation and one-time Firestore import.
-- `firestore.rules`: deny-by-default Firestore client rules; application server handlers use Admin SDK permissions.
+- `app/page.tsx`: public landing experience and complaint submission.
+- `components/portal-workflow.tsx`: citizen, admin, and contractor portals.
+- `app/api/`: login/session endpoints; complaints, categories, contractors, workflow, and photo endpoints.
+- `lib/supabase-admin.ts`: server-only Supabase client initialization.
+- `lib/supabase-types.ts`: database table and RPC types.
+- `lib/session.ts`: signed cookie session functions.
+- `lib/cloudinary.ts`: authenticated uploads, deletes, and short-lived download URLs.
+- `supabase/schema.sql`: database schema, migration-safe workflow columns, RLS, and transactional RPCs.
+- `scripts/import-dataset.mjs`: data validation/import, loading `.env.local` for local CLI runs.
 
-## 4. Request and data-flow design
-
-### 4.1 Sign-in
+## 4. Authentication and sessions
 
 `POST /api/auth/login` accepts a role, user ID, and password:
 
-- Citizen IDs are normalized to digits and validated as a 10–15 digit phone number.
-- Admin IDs are lowercased and must match an imported `admins.emailNormalized`.
-- Contractor IDs are normalized to digits and must match an active imported `contractors.phoneNormalized`.
-- The citizen password is read from `CITIZEN_PASSWORD` (default `pass123`); admin and contractor accounts share `STAFF_PASSWORD` (default `admin`).
-- A successful login returns a signed session cookie. The cookie is HttpOnly, SameSite=Strict, and has an eight-hour lifetime.
-- `GET /api/auth/session` returns the current session identity; `POST /api/auth/logout` clears the session cookie.
+- Citizen uses a normalized mobile number (10–15 digits) and `CITIZEN_PASSWORD` (default `pass123`).
+- Admin uses a normalized email that must match `admins.email_normalized`.
+- Contractor uses a normalized phone number matching an active `contractors.phone_normalized`.
+- Admin and contractor use `STAFF_PASSWORD` (default `admin`).
 
-These shared passwords are a development/testing arrangement, not production-grade identity verification. In particular, knowing a phone number plus the shared citizen password does not prove ownership of that number. Before production use, replace this model with individually verifiable identities (for example Firebase Authentication plus verified phone OTP or email), account recovery, rate limits, and appropriate audit controls.
+Successful login creates an eight-hour HMAC-signed, HttpOnly, SameSite=Strict `govfix_session` cookie. `/api/auth/session` verifies and returns its identity; `/api/auth/logout` clears the cookie.
 
-### 4.2 Complaint submission
+**This is test authentication only.** Shared passwords do not prove that a person owns an email address or phone number. Before production, replace this with individually authenticated Supabase Auth identities and verified email/phone claims, along with account recovery and abuse protections.
 
-1. A signed-in citizen submits category, title, description, location coordinates, address context, and optional images to `POST /api/complaints`.
-2. The server validates the citizen session, category record, required fields, coordinates, image count, MIME type, and size.
-3. Images are streamed to Cloudinary as `authenticated` image assets under a complaint-specific public ID. The application records only non-secret Cloudinary metadata (`photoId`, `publicId`, format, content type) in Firestore.
-4. The server creates the complaint and initial `submitted` update. New identifiers use the `GF-<year>-<random>` form.
-5. If the Firestore create fails after an image upload, the API attempts to delete the uploaded Cloudinary objects. A cleanup failure is reported rather than silently ignored.
+## 5. Database model
 
-Images are limited by the API to JPEG, PNG, or WebP, no more than 10 images per submission and no more than 10 MB per image.
+`supabase/schema.sql` creates or extends these tables:
 
-### 4.3 Reading complaints
+| Table | Purpose and notable columns |
+|---|---|
+| `complaints` | One row per tracking ID: category, title/details, location, citizen mobile, status, contractor assignment, photo metadata JSONB, timestamps |
+| `complaint_updates` | Append-only timeline: tracking ID, event type/message, actor role/name, timestamp |
+| `contractors` | Imported contractor IDs, normalized phone, categories, service zone/areas, active flag |
+| `admins` | Imported officer IDs, normalized email, category and contact fields |
+| `categories` | Category ID and display label |
+| `dataset_imports` | One-time `govfix-v2` marker and import counts |
 
-`GET /api/complaints` returns records scoped to the current session:
+Indexes support citizen and contractor complaint lists, admin incremental updates, and per-complaint history retrieval. New complaints use `GF-<year>-<random>` IDs. Existing dataset IDs are preserved.
 
-- Citizens query by their normalized `citizenMobile`.
-- Contractors query by their `contractorId`.
-- Administrators can query all records and use the `since` cursor for incremental refresh.
+The repository originally included a public complaint table with a legacy `image_paths` field and public insert/read policies. The new SQL adds workflow fields to the existing complaint table instead of dropping its rows, revokes the broad table grants, enables RLS without public policies, and removes the known public image-upload policy. Review the SQL and take a database backup before applying it to a project with important existing data.
 
-`GET /api/complaints?id=<trackingId>` returns the detail/history for one complaint only after the handler verifies that the session is an admin, the matching citizen, or the assigned contractor. Citizen responses do not reveal private completion evidence or another citizen's private data.
+## 6. Database security and atomicity
 
-The admin portal polls for changes every five seconds; citizen and contractor portals refresh every ten seconds. These are polling intervals, not a Firestore realtime listener.
+The application uses the server-only Supabase service-role key. That key bypasses RLS; therefore:
 
-### 4.4 Assignment and contractor work
+- The browser must never receive it.
+- API route handlers enforce role, citizen ownership, and contractor assignment checks before returning records or mutating data.
+- The schema enables RLS and grants table/RPC access only to `service_role`; no `anon` or `authenticated` policies expose personal records.
+- Do not add a broad public `SELECT` policy for complaints.
 
-- Admins retrieve the contractor directory from `GET /api/contractors`. The directory route is admin-only and filters by active state and, where supplied, category.
-- `POST /api/complaints/[trackingId]/assign` requires the admin role, an active contractor, and a matching complaint category when both records specify one. A Firestore transaction updates the complaint and appends an assignment event.
-- `POST /api/complaints/[trackingId]/status` allows only the assigned contractor to move an `Assigned` or `Rework required` complaint to `In progress`.
-- `POST /api/complaints/[trackingId]/completion` accepts the work description and completion images from the assigned contractor. It uploads authenticated assets, then uses a Firestore transaction to move the complaint to `Work completed` and append the event.
+`create_complaint_with_update` inserts a new complaint and its initial history event atomically. `transition_complaint` locks the row, validates its current status (and optionally the assigned contractor), applies allowed workflow fields, updates its timestamp, and inserts the corresponding event within the same transaction.
 
-### 4.5 Review and closure
+## 7. End-to-end workflow and API
 
-`POST /api/complaints/[trackingId]/review` is admin-only and accepts either:
+### 7.1 Complaint submit and retrieval
 
-- `approve`: mark the photos public, move the complaint to `Closed`, and append an approval event; or
-- `reject` (request rework): require a reason, keep photos private to staff, move the complaint to `Rework required`, and append a rework event containing the reason.
+`POST /api/complaints` requires a citizen session, validates the category, complaint fields, coordinates, and image limits, uploads optional images to Cloudinary, and invokes `create_complaint_with_update`. On database failure it attempts to delete uploaded objects and returns an explicit cleanup error if cleanup fails.
 
-The contractor can restart work on a complaint marked `Rework required` and submit updated evidence after completion.
+`GET /api/complaints` scopes database results by citizen phone or contractor ID; admins can query all rows. Admin polling may send a `since` cursor, mapped to `updated_at >= cursor - 1 second`. `GET /api/complaints?id=<trackingId>` verifies record ownership/assignment and returns timeline details.
 
-### 4.6 Photo authorization and delivery
+### 7.2 Contractor assignment
 
-The client receives same-origin photo paths, not Cloudinary credentials or permanent asset URLs. `GET /api/complaints/[trackingId]/photos/[photoId]`:
+Admins list active contractors from `GET /api/contractors`. `POST /api/complaints/[trackingId]/assign` checks the selected contractor is active and category-compatible, then uses `transition_complaint` to save the assignment, status, and history event atomically.
 
-1. Requires a valid session.
-2. Loads the complaint and verifies the requester is its citizen, assigned contractor, or an admin.
-3. Finds the requested photo in the complaint's persisted metadata.
-4. For a citizen requesting completion evidence, requires `public === true`.
-5. Obtains a short-lived signed Cloudinary download URL and proxies the image with a private/no-store cache policy.
+### 7.3 Field work and completion
 
-This route prevents unauthorized API access but cannot prevent an authorized user from saving or redistributing an image after viewing it. Review privacy, retention, and consent requirements before real-world deployment.
+`POST /api/complaints/[trackingId]/status` only permits the assigned contractor to begin an `Assigned` or `Rework required` case. `POST /api/complaints/[trackingId]/completion` uploads 1–10 valid images and changes the complaint to `Work completed` with a completion description and history event through the transition RPC.
 
-## 5. Firestore data model
+### 7.4 Admin review
 
-| Collection | Document ID | Important fields |
-|---|---|---|
-| `complaints` | Complaint tracking ID | `trackingId`, `title`, `details`, `categoryId`, `category`, location/coordinates, `citizenName`, `citizenMobile`, `status`, `contractorId`, `contractorName`, `reportPhotos`, `completionPhotos`, `completionDescription`, timestamps, import metadata |
-| `complaints/{trackingId}/updates` | Auto-generated event ID | `type`, `message`, `actorRole`, `actorName`, `createdAt` |
-| `contractors` | Dataset contractor ID | Contractor identity, normalized phone, service category, zone, service areas, active flag |
-| `admins` | Officer ID or source identity | Name, email and `emailNormalized`, officer/category information |
-| `categories` | Source category ID | `label` |
-| `datasetImports` | `govfix-v2` marker | Import timestamp and input/import counts; prevents accidental repeat import |
+`POST /api/complaints/[trackingId]/review` is admin-only:
 
-Statuses currently used by the application include `Submitted`, `Assigned`, `In progress`, `Work completed`, `Rework required`, and `Closed`. Imported source statuses are normalized to the supported initial statuses. Each application workflow transition updates `updatedAt` and adds an event in the same transaction when applicable.
+- Approve: close the complaint, mark completion images public for the citizen, and append an approval event.
+- Reject/request rework: require a reason, mark evidence private to staff, set `Rework required`, and append the reasoned event.
 
-The importer seeds historical complaints without uploading historical photos; imported complaint records have an empty `reportPhotos` array. Dataset contents are local input and are not committed to the repository.
+### 7.5 Photo access
 
-## 6. Security model and production gaps
+Cloudinary objects are uploaded with `type: authenticated`. The application returns same-origin photo URLs. `GET /api/complaints/[trackingId]/photos/[photoId]` checks session, case access, and—when the requester is the citizen—the completion photo's `public` flag. It obtains a short-lived Cloudinary download signature and proxies the result with private/no-store response headers. Authorized users can still save or share photos after viewing them; deployment must follow relevant privacy and retention policy.
 
-### Current protections
+Allowed image formats are JPEG, PNG, and WebP, with a maximum of 10 images and 10 MB per image.
 
-- Firebase Admin and Cloudinary secrets are consumed only in server-side modules.
-- Firestore client security rules deny direct reads/writes.
-- API routes enforce a signed role and validate ownership/assignment before complaint access and mutations.
-- Sessions use an HMAC signature, HttpOnly cookie, SameSite=Strict, expiration, and timing-safe signature comparison.
-- Photo assets use Cloudinary authenticated delivery, and photo reads are mediated through an access-checked endpoint.
-- Dataset files and `.env*.local` are ignored by Git.
+## 8. Dataset import
 
-### Required before production
+The ignored, local-only `Dataset/` directory must contain:
 
-1. **Rotate the service-account key previously shared in chat.** Treat it as compromised; revoke it in Google Cloud IAM and configure a replacement locally. Never commit or paste the replacement into chat.
-2. Replace shared role passwords and caller-supplied citizen phone authentication with verified, individual user identities.
-3. Add login and mutation rate limiting, abuse monitoring, and stronger brute-force protections.
-4. Review Cloudinary authenticated delivery settings and account-level controls; keep credentials server-side and rotate them if exposed.
-5. Define data retention/deletion and image consent policies for personally identifiable location and contact data.
-6. Configure backups, Firestore indexes needed by production query patterns, monitoring, alerting, and tested recovery procedures.
-7. Restrict the Google Maps browser key by allowed origins and enabled APIs if the optional map is used.
-8. Review service-account IAM permissions and grant only the Firestore access required.
+- `govfix_complaints_v2.csv`
+- `govfix_contractors.csv`
+- exactly one `govfix_officers*.xlsx`
 
-Shared passwords and the lack of identity verification mean the current login should be treated as a demo/test authentication layer and should not protect real civic records in production.
+`pnpm check:dataset` validates presence, record counts, identifiers, and normalized login identifiers without connecting to Supabase. `pnpm import:dataset` loads `.env.local`, reads the Supabase URL and service-role key, upserts staff and categories, skips complaint IDs already in Supabase, inserts source complaint rows and import history, then records `dataset_imports/govfix-v2` (table key `govfix-v2`). A successful marker prevents re-import from overwriting workflow data.
 
-## 7. Local setup and dataset import
+This is an initial import tool, not a continuous sync or general database migration system. A partial import failure can require inspection of the database before retrying.
 
-Requirements: Node.js 20+, pnpm, Python 3, a Firebase project with Firestore enabled, and Cloudinary credentials for image workflows.
+## 9. Local setup
 
-1. Install and initialize the local environment:
+Requirements: Node.js 20+, pnpm, Python 3, an existing Supabase project, and Cloudinary credentials for image handling.
+
+1. Install dependencies and create local settings:
 
    ```bash
    pnpm install
    cp .env.example .env.local
    ```
 
-2. Set the server-side variables in `.env.local`:
+2. Apply `supabase/schema.sql` from Supabase SQL Editor after reviewing/backing up any existing schema.
+3. Set server values in `.env.local`:
 
    ```dotenv
-   FIREBASE_SERVICE_ACCOUNT_JSON=<complete service-account JSON on one line>
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_SERVICE_ROLE_KEY=<server-only service-role key>
    SESSION_SECRET=<unique random value of at least 32 bytes>
    CLOUDINARY_CLOUD_NAME=<cloud name>
    CLOUDINARY_API_KEY=<API key>
@@ -180,44 +162,19 @@ Requirements: Node.js 20+, pnpm, Python 3, a Firebase project with Firestore ena
    STAFF_PASSWORD=admin
    ```
 
-   The Firebase service-account JSON must contain valid `project_id`, `client_email`, and `private_key` fields. JSON-escaped `\n` in the private key is supported. Keep `.env.local` private and never define server secrets using `NEXT_PUBLIC_` variables. A unique session secret can be generated locally with `openssl rand -base64 48`.
-
-3. For optional Maps support, set `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` to a browser API key restricted to the deployed origin.
-4. Configure Firestore rules from `firestore.rules`. The server uses Firebase Admin and is not restricted by client security rules; authorization therefore depends on the route-handler checks.
-5. Place the provided source files in the ignored `Dataset/` directory:
-   - `govfix_complaints_v2.csv`
-   - `govfix_contractors.csv`
-   - exactly one `govfix_officers*.xlsx`
-6. Validate the source files locally, without Firebase access:
+   Supabase publishable/anon keys are not sufficient for this custom server session model; the server handlers require a service-role/secret key. Keep all server secrets off the client and out of source control. Generate a local session secret with `openssl rand -base64 48`.
+4. Optionally set a restricted `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`.
+5. Place the source data in `Dataset/`, then run:
 
    ```bash
    pnpm check:dataset
-   ```
-
-7. Import into the configured Firestore project:
-
-   ```bash
    pnpm import:dataset
+   pnpm dev
    ```
 
-The import script refuses to re-run if the `datasetImports/govfix-v2` marker exists, to avoid overwriting live workflow data. It skips complaint IDs that already exist. Validate the target project and source files before import; the importer is an initial seed mechanism, not a general-purpose synchronization or migration tool.
+## 10. Verification
 
-Run the app locally:
-
-```bash
-pnpm dev
-```
-
-Build and run the production server:
-
-```bash
-pnpm build
-pnpm start
-```
-
-## 8. Validation and operational checks
-
-Available project checks:
+Repository-level checks:
 
 ```bash
 pnpm check:dataset
@@ -227,22 +184,12 @@ npm audit --omit=dev --audit-level=high
 git diff --check
 ```
 
-The dataset check validates file presence, data counts, unique identities/IDs, and Firestore-safe document identifiers without printing dataset personal information. A successful build or dataset validation does **not** prove that Firebase or Cloudinary credentials work. After configuring both services, perform an integration smoke test with test accounts:
+After configuring Supabase and Cloudinary, test with designated test accounts: citizen submits an image-backed report; admin sees and assigns it; contractor sees only that assignment and submits completion evidence; admin requests rework and later approves; the citizen cannot fetch completion photos before approval and can afterward. Attempt cross-citizen and unassigned-contractor reads and confirm they are denied.
 
-1. Sign in as a test citizen and submit a complaint with an image.
-2. Confirm the complaint appears in the admin portal with its same tracking ID.
-3. Assign a category-matched test contractor and confirm it appears only in that contractor's work queue.
-4. Start work and submit a description plus evidence photo.
-5. Confirm the admin can inspect evidence, request rework with a reason, and later approve it.
-6. Confirm the citizen cannot retrieve unapproved completion photos and can retrieve them after closure.
-7. Attempt access as a different citizen/contractor and verify access is denied.
+## 11. Limitations and next steps
 
-## 9. Current limitations and future improvements
-
-- Login passwords are shared across each role and must be replaced before production.
-- Polling provides eventual refresh at five- and ten-second intervals; it is not push-based real-time synchronization.
-- The supplied dataset has complaint history but may not contain the specific tracking number a user expects. Imported IDs remain unchanged, while newly filed complaints receive generated IDs.
-- Initial data import does not create image objects for historical dataset records.
-- Photos are limited to JPEG, PNG, and WebP; no server-side image moderation or virus/malware scanning is implemented.
-- No automated end-to-end integration suite against Firebase/Cloudinary is configured in this repository.
-- Candidate next steps include Firebase Authentication with verified identities, Firestore emulator tests, integration tests for each role boundary, a migration framework, administrative audit reporting, operational observability, and documented retention workflows.
+- Shared passwords and non-verified user identifiers are not production authentication.
+- UI refresh is polling (admin every five seconds; citizen/contractor every ten seconds), not realtime subscriptions.
+- Historical imported complaints have no Cloudinary photo assets; source IDs are preserved.
+- No automated end-to-end test environment for Supabase and Cloudinary is configured.
+- Production readiness requires verified authentication, rate limiting, abuse controls, stronger audit/monitoring, backups/recovery tests, formal data retention/deletion, and explicit handling of user consent.
