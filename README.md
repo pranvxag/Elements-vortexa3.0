@@ -1,87 +1,71 @@
 # GovFix Civic
 
-A Next.js civic service desk demo for reporting, tracking, and resolving municipal issues.
+GovFix Civic is the existing Next.js, React, and TypeScript application for submitting municipal complaints and managing their assignment, field work, review, and resolution. Firestore is the shared database; Cloudinary stores report and completion photographs as authenticated assets. The browser does not access either service directly.
 
 ## Run locally
 
-### Requirements
-
-- Node.js 20 or newer
-- pnpm 9 or newer
-
-### Development server
+Requirements: Node.js 20 or newer and pnpm.
 
 ```bash
 pnpm install
+cp .env.example .env.local
 pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open [http://localhost:3000](http://localhost:3000).
 
-The development server reloads automatically when files change. Stop it with `Ctrl+C`.
+## Configure Firebase
 
-### Production build
+1. Create or select a Firebase project and enable Cloud Firestore.
+2. Create a service account with permission to read and write Firestore.
+3. Create a Cloudinary account and find the cloud name, API key, and API secret in its dashboard.
+4. Set these values in `.env.local`:
+
+   ```dotenv
+   FIREBASE_SERVICE_ACCOUNT_JSON=<paste the complete service account JSON on one line>
+   SESSION_SECRET=a-random-secret-with-at-least-32-characters
+   CLOUDINARY_CLOUD_NAME=your-cloud-name
+   CLOUDINARY_API_KEY=your-api-key
+   CLOUDINARY_API_SECRET=your-api-secret
+   CITIZEN_PASSWORD=pass123
+   STAFF_PASSWORD=admin
+   ```
+
+   Keep all secrets private. Generate a unique session secret, for example with `openssl rand -base64 48`. Do not use a service-account key or Cloudinary API secret in any `NEXT_PUBLIC_` variable.
+5. Deploy [firestore.rules](./firestore.rules), which deny direct client access; authenticated server API routes use the Firebase Admin SDK and enforce citizen, contractor, and administrator permissions.
+6. Keep the supplied records in the ignored, local-only `Dataset/` folder. The importer expects `govfix_complaints_v2.csv`, `govfix_contractors.csv`, and one `govfix_officers*.xlsx` file. Validate the files without connecting to Firebase:
+
+   ```bash
+   pnpm check:dataset
+   ```
+
+7. Import the records once:
+
+   ```bash
+   pnpm import:dataset
+   ```
+
+   This seeds `complaints`, `contractors`, `admins`, `categories`, and `datasetImports` in Firestore. Complaint documents retain the supplied tracking IDs and citizen mobile numbers. Re-running the import is intentionally refused so that previously imported workflow changes are not overwritten. Existing complaint IDs are skipped if already present.
+
+Cloudinary stores report and completion photos as authenticated assets. The application proxies photo downloads through an authorization-checked API and uses short-lived Cloudinary download signatures; completion photos become visible to the citizen only after an administrator approves the work. Uploads accept JPEG, PNG, and WebP images, up to 10 images of 10 MB each.
+
+## Sign-in and workflow
+
+- Citizen: mobile number and `CITIZEN_PASSWORD` (defaults to `pass123`).
+- Admin: an email found in the imported officer workbook and `STAFF_PASSWORD` (defaults to `admin`).
+- Contractor: a mobile number found in the imported contractor CSV and `STAFF_PASSWORD`.
+
+The defaults match the supplied test credentials. They are shared passwords, not proof that a user owns the supplied mobile number or email. Do not deploy them for production or use real personal data with them; use Firebase Authentication with verified identities before production.
+
+Citizens can submit reports and only retrieve reports whose stored citizen mobile matches their signed session. Administrators can review and assign category-matched contractors. Contractors can only retrieve reports assigned to their contractor record, start work, and submit a description and photographs. Administrators can approve work (closing the complaint and publishing completion photos) or request further work with a reason. Each transition is written to the complaint's `updates` subcollection; the admin portal checks for changed cases every five seconds and citizen/contractor portals refresh every ten seconds.
+
+## Maps
+
+The administrator map uses Google Maps JavaScript API. Configure `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` with a browser key restricted to your site and with Maps JavaScript API enabled. Without it, complaint management and location coordinates remain available but the interactive map shows a setup message.
+
+## Production build
 
 ```bash
 pnpm build
 pnpm start
 ```
-
-The production server is also available at [http://localhost:3000](http://localhost:3000).
-
-## Supabase complaint storage
-
-Complaint submission uses the browser's location permission and stores the report in Supabase. The staff workspace reads the same `complaints` table through `/api/complaints`, so public submissions appear in the overview, complaints list, map, and department workload. The staff workspace refreshes reports every 30 seconds and can be refreshed manually. Dashboard totals, category counts, the 30-day submission chart, and department workloads are calculated from stored complaint records. The app requires a Supabase project configured with these environment variables:
-
-```bash
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_ANON_KEY=your-anon-key
-NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=your-google-maps-browser-key
-```
-
-Create a `.env.local` file in the project root and add those values. Never use a Supabase service-role key in this project.
-
-Run the complete SQL from [supabase/schema.sql](./supabase/schema.sql) in the Supabase SQL editor. Do not run only the complaints-table portion: the same script also creates the `complaint-images` Storage bucket and its upload policy.
-
-After running it, verify that the SQL was applied in the same Supabase project as `SUPABASE_URL`:
-
-```sql
-select id, name, public
-from storage.buckets
-where id = 'complaint-images';
-
-select to_regclass('public.complaints') as complaints_table;
-```
-
-The first query must return one row with `id = complaint-images` and `public = false`. The second must return `public.complaints`. If either query returns no row, select the correct Supabase project before running the complete schema script again.
-
-If the bucket row is still missing, run this bucket-only repair in the SQL editor, followed by the upload policy:
-
-```sql
-insert into storage.buckets (id, name, public)
-values ('complaint-images', 'complaint-images', false)
-on conflict (id) do update
-set name = excluded.name, public = excluded.public;
-
-drop policy if exists "Allow public complaint image uploads" on storage.objects;
-
-create policy "Allow public complaint image uploads"
-  on storage.objects
-  for insert
-  to anon
-  with check (bucket_id = 'complaint-images');
-```
-
-The browser must be running on `localhost` or HTTPS for geolocation permission to work. Users must explicitly allow location access before a complaint can be submitted.
-
-The complaint form accepts up to 10 images per report, either from the device camera or the photo picker. Each image must be 10 MB or smaller. The schema also creates the private `complaint-images` Storage bucket and its anonymous upload policy.
-
-## Google Maps setup
-
-The staff Map intelligence page uses the Google Maps JavaScript API. Create a browser API key in Google Cloud, enable **Maps JavaScript API**, configure billing as required by Google, and restrict the key to your local site (for example `http://localhost:3000/*` and `http://127.0.0.1:3000/*`). Add it to `.env.local`:
-
-```bash
-NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=your-google-maps-browser-key
-```
-
-Restart `pnpm dev` after changing `.env.local`. Without the key, the map page shows an explicit setup message and the complaint list remains usable.
