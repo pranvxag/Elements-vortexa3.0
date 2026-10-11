@@ -1,7 +1,7 @@
 .snowflake/
 .design-cache/
 .vercel/
-
+.env
 # Environment variables
 .env*.local
 
