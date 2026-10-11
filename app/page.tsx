@@ -38,6 +38,19 @@ import {
 } from 'lucide-react'
 
 type Status = 'Submitted' | 'Under review' | 'Assigned' | 'In progress' | 'Resolved'
+type ComplaintDomain = 'Roads & Potholes' | 'Streetlights & Electrical' | 'Garbage & Cleanliness' | 'Water Supply' | 'Drainage & Sewage' | 'Public Toilets & Sanitation' | 'Construction & Encroachment' | 'Waterlogging & Flooding' | 'Parks & Public Spaces'
+const complaintDomains: ComplaintDomain[] = [
+  'Roads & Potholes',
+  'Streetlights & Electrical',
+  'Garbage & Cleanliness',
+  'Water Supply',
+  'Drainage & Sewage',
+  'Public Toilets & Sanitation',
+  'Construction & Encroachment',
+  'Waterlogging & Flooding',
+  'Parks & Public Spaces',
+]
+
 type Complaint = {
   id: string
   title: string
@@ -46,7 +59,12 @@ type Complaint = {
   area: string
   department: string
   age: string
-  priority: 'High' | 'Medium' | 'Low'
+  priority?: 'High' | 'Medium' | 'Low'
+  domain?: ComplaintDomain | 'Uncategorized'
+  details?: string
+  submittedAt?: string
+  assignedOfficer?: string
+  trackingId?: string
   icon: typeof Droplets
   latitude: number
   longitude: number
@@ -99,9 +117,37 @@ const complaintFromRecord = (record: ComplaintRecord): Complaint => ({
   longitude: record.longitude,
 })
 
+function mapSavedComplaint(record: SavedComplaintRecord): Complaint {
+  const domain = complaintDomains.includes(record.complaint_domain as ComplaintDomain)
+    ? record.complaint_domain as ComplaintDomain
+    : 'Uncategorized'
+  const validStatuses: Status[] = ['Submitted', 'Under review', 'Assigned', 'In progress', 'Resolved']
+  const status = validStatuses.includes(record.status as Status) ? record.status as Status : 'Submitted'
+  const icon = domain === 'Water Supply' ? Droplets
+    : domain === 'Streetlights & Electrical' ? Lightbulb
+      : domain === 'Garbage & Cleanliness' ? Trash2
+        : domain === 'Roads & Potholes' ? Navigation : MapPin
+
+  return {
+    id: String(record.id),
+    trackingId: record.tracking_id,
+    title: record.title,
+    category: record.category,
+    domain,
+    status,
+    area: record.location_text ?? '',
+    department: '—',
+    age: new Date(record.created_at).toLocaleString(),
+    submittedAt: record.created_at,
+    details: record.details ?? undefined,
+    icon,
+  }
+}
+
 const navItems = [
   { label: 'Overview', icon: BarChart3 },
   { label: 'Complaints', icon: FileText },
+  { label: 'Complaints by Domain', icon: ListFilter },
   { label: 'Map intelligence', icon: MapPin },
   { label: 'Departments', icon: Building2 },
 ]
@@ -333,7 +379,7 @@ function Kpi({ title, value, change, icon: Icon, tone, warning }: { title: strin
 function Activity({ initials, color, text, time }: { initials: string; color: string; text: string; time: string }) { return <div className="activity-item"><span className={`activity-avatar ${color}`}>{initials}</span><p><strong>{text.split(' ').slice(0, 2).join(' ')}</strong> {text.split(' ').slice(2).join(' ')}<small>{time}</small></p></div> }
 function CasePanel({ complaint, onClose }: { complaint: Complaint; onClose: () => void }) {
   const [opened, setOpened] = useState(false)
-  return <div className="case-overlay"><aside className="case-panel"><div className="case-top"><div><span className="eyebrow">Complaint details</span><h2>{complaint.id}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close details"><X /></button></div><div className="case-status"><StatusBadge status={complaint.status} /><span className="priority-tag"><span /> {complaint.priority} priority</span></div><h3>{complaint.title}</h3><p className="case-description">A resident reported an issue requiring municipal attention. This is a fictional demo record used to show the complete case workflow.</p><div className="case-meta"><span><MapPin /> {complaint.area}</span><span><Building2 /> {complaint.department}</span><span><Clock3 /> Received {complaint.age}</span></div><div className="case-section"><div className="case-section-title">Workflow timeline <span>3 of 5</span></div><div className="timeline"><div className="timeline-item done"><i><Check /></i><div><strong>Complaint submitted</strong><small>Today, 08:42 · Resident portal</small></div></div><div className="timeline-item done"><i><Check /></i><div><strong>Under review</strong><small>Today, 09:10 · Maya Chen</small></div></div><div className="timeline-item current"><i><Clock3 /></i><div><strong>{complaint.status}</strong><small>Action required from assigned team</small></div></div><div className="timeline-item"><i /> <div><strong>Resolved</strong><small>Pending</small></div></div></div></div><div className="ai-callout"><Sparkles /><div><strong>AI suggestion · Needs review</strong><p>Likely category: {complaint.category}. Route to {complaint.department} based on location and issue keywords.</p></div></div>{opened && <p className="case-opened-note" role="status">Full case view opened for {complaint.id}. All workflow details are shown in this panel.</p>}<button className="button button-primary full" onClick={() => setOpened(true)}>{opened ? 'Case is open' : 'Open full case'} <ArrowRight /></button></aside></div>
+  return <div className="case-overlay"><aside className="case-panel"><div className="case-top"><div><span className="eyebrow">Complaint details</span><h2>{complaint.trackingId ?? complaint.id}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close details"><X /></button></div><div className="case-status"><StatusBadge status={complaint.status} />{complaint.priority && <span className="priority-tag"><span /> {complaint.priority} priority</span>}</div><h3>{complaint.title}</h3>{complaint.domain && <p className="case-domain">Complaint Domain: {complaint.domain}</p>}<p className="case-description">{complaint.details || 'No additional description provided.'}</p><div className="case-meta"><span><MapPin /> {complaint.area || 'Location not provided'}</span><span><Building2 /> {complaint.assignedOfficer || 'No officer assigned'}</span><span><Clock3 /> Submitted {complaint.submittedAt ? new Date(complaint.submittedAt).toLocaleString() : complaint.age}</span></div>{opened && <p className="case-opened-note" role="status">Full case view opened for {complaint.trackingId ?? complaint.id}.</p>}<button className="button button-primary full" onClick={() => setOpened(true)}>{opened ? 'Case is open' : 'Open full case'} <ArrowRight /></button></aside></div>
 }
 
 export default function Page() { const [portal, setPortal] = useState<'citizen' | 'staff'>('citizen'); return <><div className="portal-switcher"><button className={portal === 'citizen' ? 'selected' : ''} onClick={() => setPortal('citizen')}><House /> Citizen portal</button><button className={portal === 'staff' ? 'selected' : ''} onClick={() => setPortal('staff')}><BarChart3 /> Staff workspace</button></div>{portal === 'citizen' ? <CitizenLanding onEmployee={() => setPortal('staff')} /> : <EmployeeDashboard onCitizen={() => setPortal('citizen')} />}</> }
